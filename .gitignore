@@ -1,0 +1,12 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+.agents/
+.codex/
+skills-lock.json
+
+test.mojo
+corpus.md
+
+DIARY.md
