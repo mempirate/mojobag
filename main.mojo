@@ -1,4 +1,4 @@
-from std.collections import Counter
+from std.collections import Counter, BinaryHeap
 from time import Duration, Instant
 
 # Type aliases for common numeric types.
@@ -20,6 +20,30 @@ comptime Pair = u64
 comptime TARGET_VOCABULARY_SIZE = 50000
 
 
+@fieldwise_init
+struct PairCount(Comparable, Copyable, Deinitable):
+    var pair: Pair
+    var count: int
+
+    def __lt__(self, rhs: Self) -> Bool:
+        return self.count < rhs.count
+
+    def __le__(self, rhs: Self) -> Bool:
+        return self.count <= rhs.count
+
+    def __eq__(self, rhs: Self) -> Bool:
+        return self.count == rhs.count
+
+    def __ne__(self, rhs: Self) -> Bool:
+        return not self.count == rhs.count
+
+    def __gt__(self, rhs: Self) -> Bool:
+        return self.count > rhs.count
+
+    def __ge__(self, rhs: Self) -> Bool:
+        return self.count >= rhs.count
+
+
 def main() raises:
     with open("corpus.md", "r") as f:
         var corpus = f.read()
@@ -35,9 +59,11 @@ struct Tokenizer:
     var merges: Dict[Pair, Token]
 
     var counts: Counter[Pair]
-    # Optional list of dirty edge indices in the list of tokens. These are
-    # the indices whose pairs need to be recounted.
-    var dirty: List[int]
+    # List of dirty edge indices in the list of tokens. These are
+    # the indices whose pairs need to be recounted (int represents the
+    # left index of the pair).
+    var dirty: Optional[List[int]]
+    var top_candidates: BinaryHeap[PairCount]
 
     var count_duration: Duration
     var most_common_duration: Duration
@@ -47,7 +73,8 @@ struct Tokenizer:
         self.merges = Dict[Pair, Token]()
 
         self.counts = Counter[Pair]()
-        self.dirty = List[int]()
+        self.dirty = None
+        self.top_candidates = BinaryHeap[PairCount]()
 
         self.count_duration = Duration(0)
         self.most_common_duration = Duration(0)
@@ -63,6 +90,11 @@ struct Tokenizer:
         if not self.counts[pair]:
             var _ = self.counts.pop(pair, 0)
 
+    def increment_count(mut self, pair: Pair):
+        self.counts[pair] += 1
+
+        self.top_candidates.push(PairCount(pair, self.counts[pair]))
+
     def count_pairs(mut self, tokens: List[Token]) raises:
         if len(tokens) < 2:
             return
@@ -73,19 +105,47 @@ struct Tokenizer:
                 var pair = pack_pair(first, second)
 
                 self.counts[pair] += 1
+
+            # Populate the initial top candidates heap.
+            for item in self.counts.items():
+                self.top_candidates.push(PairCount(item.key, item.value))
+
         else:
             # Else, only recount neighbours of dirty indices (newly inserted tokens)
-
-            for i in self.dirty:
+            ref dirty = self.dirty.value()
+            for i in dirty:
                 if i < len(tokens) - 1:
                     var pair = pack_pair(tokens[i], tokens[i + 1])
 
-                    self.counts[pair] += 1
+                    self.increment_count(pair)
 
-            self.dirty.clear()
+            dirty.clear()
 
-    def most_common(self) -> Optional[Pair]:
-        if self.counts:
+    def most_common(mut self) -> Optional[Pair]:
+        if self.counts and len(self.top_candidates) > 0:
+            # Iterate over the top candidates
+            while len(self.top_candidates) > 0:
+                ref candidate = self.top_candidates.peek()
+
+                var actual_count = self.counts[candidate.pair]
+
+                if actual_count < 2:
+                    # Remove the candidate
+                    _ = self.top_candidates.pop()
+                    continue
+
+                if candidate.count != actual_count:
+                    # Update the stale candidate
+                    var pair = candidate.pair
+                    _ = self.top_candidates.pop()
+                    self.top_candidates.push(PairCount(pair, actual_count))
+
+                    continue
+
+                return candidate.pair
+
+            return None
+        elif self.counts:
             var pair = self.counts.most_common(1)[0].copy()
             return pair._value if pair._count > 1 else None
         else:
@@ -140,27 +200,31 @@ struct Tokenizer:
 
                 # Record dirty indices
                 if self.dirty:
+                    ref dirty = self.dirty.value()
                     # Record potential new left pair as dirty:
                     if write > 0 and (
-                        len(self.dirty) == 0
-                        or not self.dirty[len(self.dirty) - 1] == write - 1
+                        len(dirty) == 0
+                        or not dirty[len(dirty) - 1] == write - 1
                     ):
-                        self.dirty.append(write - 1)
+                        dirty.append(write - 1)
 
                     # Also record potential right pair as dirty:
                     if write < len(tokens):
-                        self.dirty.append(write)
+                        dirty.append(write)
 
                 else:
                     # Initialize a new dirty list
+                    self.dirty = List[int]()
+
+                    ref dirty = self.dirty.value()
 
                     # Record potential new left pair as dirty:
                     if write > 0:
-                        self.dirty.append(write - 1)
+                        dirty.append(write - 1)
 
                     # Also record potential right pair as dirty:
                     if write < len(tokens):
-                        self.dirty.append(write)
+                        dirty.append(write)
 
                 write += 1
                 read += 2
