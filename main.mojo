@@ -37,7 +37,7 @@ struct Tokenizer:
     var counts: Counter[Pair]
     # Optional list of dirty edge indices in the list of tokens. These are
     # the indices whose pairs need to be recounted.
-    var dirty: Optional[List[int]]
+    var dirty: List[int]
 
     var count_duration: Duration
     var most_common_duration: Duration
@@ -47,13 +47,17 @@ struct Tokenizer:
         self.merges = Dict[Pair, Token]()
 
         self.counts = Counter[Pair]()
-        self.dirty = None
+        self.dirty = List[int]()
 
         self.count_duration = Duration(0)
         self.most_common_duration = Duration(0)
         self.merge_duration = Duration(0)
 
     def decrement_count(mut self, pair: Pair):
+        """
+        Decrements the count for `pair`, removing it from the `self.counts` Counter
+        if the count hits zero.
+        """
         self.counts[pair] -= 1
 
         if not self.counts[pair]:
@@ -71,15 +75,14 @@ struct Tokenizer:
                 self.counts[pair] += 1
         else:
             # Else, only recount neighbours of dirty indices (newly inserted tokens)
-            ref dirty = self.dirty.value()
 
-            for i in dirty:
-                if i + 1 < len(tokens):
+            for i in self.dirty:
+                if i < len(tokens) - 1:
                     var pair = pack_pair(tokens[i], tokens[i + 1])
 
                     self.counts[pair] += 1
 
-            dirty.clear()
+            self.dirty.clear()
 
     def most_common(self) -> Optional[Pair]:
         if self.counts:
@@ -137,32 +140,27 @@ struct Tokenizer:
 
                 # Record dirty indices
                 if self.dirty:
-                    ref dirty = self.dirty.value()
-
                     # Record potential new left pair as dirty:
                     if write > 0 and (
-                        len(dirty) == 0
-                        or not dirty[len(dirty) - 1] == write - 1
+                        len(self.dirty) == 0
+                        or not self.dirty[len(self.dirty) - 1] == write - 1
                     ):
-                        dirty.append(write - 1)
+                        self.dirty.append(write - 1)
 
                     # Also record potential right pair as dirty:
                     if write < len(tokens):
-                        dirty.append(write)
+                        self.dirty.append(write)
 
                 else:
                     # Initialize a new dirty list
-                    var dirty = List[int]()
 
                     # Record potential new left pair as dirty:
                     if write > 0:
-                        dirty.append(write - 1)
+                        self.dirty.append(write - 1)
 
                     # Also record potential right pair as dirty:
                     if write < len(tokens):
-                        dirty.append(write)
-
-                    self.dirty = dirty^
+                        self.dirty.append(write)
 
                 write += 1
                 read += 2
@@ -256,10 +254,12 @@ struct Tokenizer:
         return ""
 
 
+@always_inline
 def pack_pair(first: Token, second: Token) -> Pair:
     return (u64(first) << 32) | u64(second)
 
 
+@always_inline
 def unpack_pair(pair: Pair) -> Tuple[Token, Token]:
     # Shift right by 32 bits
     var first = Token(pair >> 32)
