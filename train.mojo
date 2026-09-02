@@ -12,7 +12,7 @@ def main() raises:
 
         print(t"Corpus size: {f32(corpus.byte_length()) / 1e6} MB")
 
-        var trainer = BPETrainer()
+        var trainer = BPETrainer(min_frequency=1)
         trainer.train(corpus, 50000)
 
 
@@ -21,10 +21,12 @@ comptime TokenString = List[Token]
 
 struct BPETrainer:
     var regex: Regex
+    var min_frequency: int
     var word_counts: Counter[TokenString]
 
-    def __init__(out self) raises:
+    def __init__(out self, min_frequency: int) raises:
         self.regex = Regex(gpt5_pattern())
+        self.min_frequency = min_frequency
         self.word_counts = Counter[TokenString]()
 
     def train(mut self, corpus: String, vocab_size: int) raises:
@@ -68,7 +70,7 @@ struct BPETrainer:
         var num_merges = vocab_size - len(vocab)
 
         timer = Instant.now()
-        var pair_counts = Counter[Tuple[Token, Token]]()
+        var pair_counts = Dict[Tuple[Token, Token], int]()
         # Reverse index from pairs to word IDs that contain said pair.
         var pair_to_words = Dict[Tuple[Token, Token], Set[u32]]()
 
@@ -80,7 +82,7 @@ struct BPETrainer:
 
             for i in range(len(word) - 1):
                 var pair = (Token(word[i]), Token(word[i + 1]))
-                pair_counts[pair] += count
+                pair_counts.setdefault(pair, 0) += count
                 pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
         var heap = BinaryHeap[PairCount]()
@@ -118,7 +120,7 @@ struct BPETrainer:
                 var actual_count = pair_counts[candidate.pair]
 
                 # Pop useless pair counts
-                if actual_count < 2:
+                if actual_count < self.min_frequency:
                     _ = heap.pop()
 
                     continue
@@ -165,9 +167,10 @@ struct BPETrainer:
                 # Remove stale pair counts and index occurences
                 for i in range(len(word) - 1):
                     var pair = (word[i], word[i + 1])
-                    pair_counts[pair] -= count
+                    ref pc = pair_counts[pair]
+                    pc -= count
 
-                    if pair_counts[pair] <= 0:
+                    if pc <= 0:
                         _ = pair_counts.pop(pair)
 
                     pair_to_words[pair].discard(id)
@@ -185,7 +188,9 @@ struct BPETrainer:
 
                 for i in range(len(new_word) - 1):
                     var pair = (new_word[i], new_word[i + 1])
-                    pair_counts[pair] += count
+                    ref pair_count = pair_counts.setdefault(pair, 0)
+                    pair_count += count
+                    heap.push(PairCount(pair=pair, count=pair_count))
                     pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
                 words[id] = new_word^
