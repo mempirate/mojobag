@@ -20,6 +20,17 @@ comptime Pair = u64
 comptime TARGET_VOCABULARY_SIZE = 50000
 
 
+def main() raises:
+    with open("corpus.md", "r") as f:
+        var corpus = f.read()
+
+        print(t"Text bytes: {f32(corpus.byte_length()) / 1e6} MB")
+
+        var tokenizer = Tokenizer()
+
+        tokenizer.train(corpus, TARGET_VOCABULARY_SIZE)
+
+
 @fieldwise_init
 struct PairCount(Comparable, Copyable, Deinitable):
     var pair: Pair
@@ -35,7 +46,7 @@ struct PairCount(Comparable, Copyable, Deinitable):
         return self.count == rhs.count
 
     def __ne__(self, rhs: Self) -> Bool:
-        return not self.count == rhs.count
+        return self.count != rhs.count
 
     def __gt__(self, rhs: Self) -> Bool:
         return self.count > rhs.count
@@ -44,21 +55,11 @@ struct PairCount(Comparable, Copyable, Deinitable):
         return self.count >= rhs.count
 
 
-def main() raises:
-    with open("corpus.md", "r") as f:
-        var corpus = f.read()
-
-        print(t"Text bytes: {f32(corpus.byte_length()) / 1e6} MB")
-
-        var tokenizer = Tokenizer()
-
-        tokenizer.train(corpus, TARGET_VOCABULARY_SIZE)
-
-
 struct Tokenizer:
     var merges: Dict[Pair, Token]
 
     var counts: Counter[Pair]
+    var pair_to_tokens: Dict[Pair, List[int]]
     # List of dirty edge indices in the list of tokens. These are
     # the indices whose pairs need to be recounted (int represents the
     # left index of the pair).
@@ -73,6 +74,7 @@ struct Tokenizer:
         self.merges = Dict[Pair, Token]()
 
         self.counts = Counter[Pair]()
+        self.pair_to_tokens = Dict[Pair, List[int]]()
         self.dirty = None
         self.top_candidates = BinaryHeap[PairCount]()
 
@@ -101,14 +103,17 @@ struct Tokenizer:
 
         if not self.dirty:
             # If we have no dirty indices yet, build up the full count for the first time.
-            for first, second in zip(tokens, tokens[1:]):
+            for i, (first, second) in enumerate(zip(tokens, tokens[1:])):
                 var pair = pack_pair(first, second)
 
                 self.counts[pair] += 1
+                self.pair_to_tokens[pair].append(i)
 
             # Populate the initial top candidates heap.
             for item in self.counts.items():
-                self.top_candidates.push(PairCount(item.key, item.value))
+                self.top_candidates.push(
+                    PairCount(pair=item.key, count=item.value)
+                )
 
         else:
             # Else, only recount neighbours of dirty indices (newly inserted tokens)
@@ -118,6 +123,7 @@ struct Tokenizer:
                     var pair = pack_pair(tokens[i], tokens[i + 1])
 
                     self.increment_count(pair)
+                    self.pair_to_tokens[pair].append(i)
 
             dirty.clear()
 
@@ -132,11 +138,13 @@ struct Tokenizer:
                 if actual_count < 2:
                     # Remove the candidate
                     _ = self.top_candidates.pop()
+
                     continue
 
                 if candidate.count != actual_count:
                     # Update the stale candidate
                     var pair = candidate.pair
+
                     _ = self.top_candidates.pop()
                     self.top_candidates.push(PairCount(pair, actual_count))
 
@@ -165,8 +173,14 @@ struct Tokenizer:
 
         # Cache the right pair's edge of the previous iteration, to make
         # sure we don't decrement it twice. We start at -1 to ensure
-        # the first iteration passes correctly.
+        # the first iteration passes correctly (could also start at 0
+        # and add another condition, but branching in this loop is expensive).
         var prev_right_edge: int = -1
+
+        var indices = self.pair_to_tokens.get(pair, [])
+
+        for i in indices:
+            _ = i
 
         while read < len(tokens):
             if (
@@ -203,8 +217,7 @@ struct Tokenizer:
                     ref dirty = self.dirty.value()
                     # Record potential new left pair as dirty:
                     if write > 0 and (
-                        len(dirty) == 0
-                        or not dirty[len(dirty) - 1] == write - 1
+                        len(dirty) == 0 or dirty[len(dirty) - 1] != write - 1
                     ):
                         dirty.append(write - 1)
 
@@ -295,7 +308,7 @@ struct Tokenizer:
         )
         print(t"Tokens length: {len(tokens)}")
         print(t"Merged length: {len(merged)}")
-        print(t"Compresion ratio: {f32(len(tokens)) / f32(len(merged))}x")
+        print(t"Compression ratio: {f32(len(tokens)) / f32(len(merged))}x")
 
         print(t"Done in {elapsed_secs * 1000} ms")
         print()

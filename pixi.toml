@@ -7,6 +7,12 @@ version = "0.1.0"
 [tasks]
 main = "mojo run main.mojo"
 test = "mojo run test.mojo"
+pcre2-test = "mojo run test_pcre2.mojo"
+pretoken-bench = "mojo run bench_pretokenize.mojo"
+wikitext-unzip = "unzip -q -o data/wikitext-103-raw-v1.zip -d data/"
 
 [dependencies]
 mojo = ">=1.0.0,<2"
+git-lfs = ">=3.8.0,<4"
+unzip = ">=6.0,<7"
+pcre2 = ">=10.47,<11"
