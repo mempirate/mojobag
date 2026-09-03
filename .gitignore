@@ -11,3 +11,5 @@ corpus.md
 data/wikitext-103-raw/
 
 DIARY.md
+
+*.json.gz

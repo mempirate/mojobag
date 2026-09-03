@@ -16,9 +16,12 @@ from main import (
 )
 from time import Duration, Instant, Profiler
 
+# comptime CORPUS = "corpus.md"
+comptime CORPUS = "data/wikitext-103-raw/wiki.train.raw"
+
 
 def main() raises:
-    with open("data/wikitext-103-raw/wiki.train.raw", "r") as f:
+    with open(CORPUS, "r") as f:
         var corpus = f.read()
 
         print(t"Corpus size: {f32(corpus.byte_length()) / 1e6} MB")
@@ -177,29 +180,19 @@ struct BPETrainer:
                 var count = word_counts[id]
                 ref word = words[id]
 
-                # TODO: this does more work than it needs to.
-                # For every pair in the word, we eagerly remove it from
-                # all memory (even if the pair is unaffected). We then proceed
-                # to rebuild the word and all the pair references again.
-                # Another side effect of this is that we push way more heap entries
-                # than we should. We could instead operate only on the pair in question and its neighbors.
-
-                # Remove stale pair counts and index occurences
-                for i in range(len(word) - 1):
-                    var pair = pack_pair(word[i], word[i + 1])
-                    ref pc = pair_counts[pair]
-                    pc -= count
-
-                    if pc <= 0:
-                        _ = pair_counts.pop(pair)
-
-                    pair_to_words[pair].discard(id)
-
                 var new_word = TokenString()
+                var deltas = Dict[Pair, int]()
+                var old_pairs = Set[Pair]()
+                var new_pairs = Set[Pair]()
                 var i = 0
 
                 while i < len(word):
                     var emitted: Token
+
+                    if i < len(word) - 1:
+                        var pair = pack_pair(word[i], word[i + 1])
+                        deltas.setdefault(pair, 0) -= count
+                        old_pairs.add(pair)
 
                     if (
                         i < len(word) - 1
@@ -207,6 +200,10 @@ struct BPETrainer:
                         and word[i + 1] == right
                     ):
                         emitted = new_id
+                        if i < len(word) - 2:
+                            var pair = pack_pair(word[i + 1], word[i + 2])
+                            deltas.setdefault(pair, 0) -= count
+                            old_pairs.add(pair)
                         i += 2
                     else:
                         emitted = word[i]
@@ -216,13 +213,29 @@ struct BPETrainer:
                         var pair = pack_pair(
                             new_word[len(new_word) - 1], emitted
                         )
-
-                        ref pc = pair_counts.setdefault(pair, 0)
-                        pc += count
-                        heap.push(PairCount(pair=pair, count=pc))
-                        pair_to_words.setdefault(pair, Set[u32]()).add(id)
+                        deltas.setdefault(pair, 0) += count
+                        new_pairs.add(pair)
 
                     new_word.append(emitted)
+
+                for item in deltas.items():
+                    if item.value == 0:
+                        continue
+
+                    ref pc = pair_counts.setdefault(item.key, 0)
+                    pc += item.value
+                    if pc <= 0:
+                        _ = pair_counts.pop(item.key)
+                    elif item.value > 0:
+                        heap.push(PairCount(pair=item.key, count=pc))
+
+                for pair in old_pairs:
+                    if pair not in new_pairs:
+                        pair_to_words[pair].discard(id)
+
+                for pair in new_pairs:
+                    if pair not in old_pairs:
+                        pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
                 words[id] = new_word^
 

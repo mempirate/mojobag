@@ -10,9 +10,15 @@ test = "mojo run test.mojo"
 pcre2-test = "mojo run test_pcre2.mojo"
 pretoken-bench = "mojo run bench_pretokenize.mojo"
 wikitext-unzip = "unzip -q -o data/wikitext-103-raw-v1.zip -d data/"
+profile-build = "mojo build -O3 -g2 --debug-info-language C train.mojo -o .pixi/train-profile"
+# Requires:
+# - sudo sysctl kernel.perf_event_mlock_kb=2048
+# - echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
+profile = { cmd = "samply record ./.pixi/train-profile", depends-on = ["profile-build"] }
 
 [dependencies]
 mojo = ">=1.0.0,<2"
 git-lfs = ">=3.8.0,<4"
 unzip = ">=6.0,<7"
 pcre2 = ">=10.47,<11"
+samply = ">=0.13.1,<0.14"
