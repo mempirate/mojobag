@@ -2,7 +2,18 @@ from std.collections import Counter, Set, BinaryHeap
 
 from pretokenize import gpt5_pattern
 from pcre2 import MatchSpan, Regex
-from main import f32, f64, u32, u64, usize, int, Token
+from main import (
+    Pair,
+    Token,
+    f32,
+    f64,
+    int,
+    pack_pair,
+    u32,
+    u64,
+    unpack_pair,
+    usize,
+)
 from time import Duration, Instant, Profiler
 
 
@@ -70,9 +81,9 @@ struct BPETrainer:
         var num_merges = vocab_size - len(vocab)
 
         timer = Instant.now()
-        var pair_counts = Dict[Tuple[Token, Token], int]()
+        var pair_counts = Dict[Pair, int]()
         # Reverse index from pairs to word IDs that contain said pair.
-        var pair_to_words = Dict[Tuple[Token, Token], Set[u32]]()
+        var pair_to_words = Dict[Pair, Set[u32]]()
 
         for item in word_counts.items():
             ref id = item.key
@@ -81,7 +92,7 @@ struct BPETrainer:
             ref word = words[id]
 
             for i in range(len(word) - 1):
-                var pair = (Token(word[i]), Token(word[i + 1]))
+                var pair = pack_pair(word[i], word[i + 1])
                 pair_counts.setdefault(pair, 0) += count
                 pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
@@ -93,7 +104,7 @@ struct BPETrainer:
 
         profiler.record("initialize pair counts", Instant.now().since(timer))
 
-        var merges = List[Tuple[u32, u32]]()
+        var merges = List[Pair]()
 
         var select_pair_duration = Duration(0)
         var update_vocabulary_duration = Duration(0)
@@ -106,7 +117,7 @@ struct BPETrainer:
             # Get the most common pair
             timer = Instant.now()
 
-            var top_pair: Optional[Tuple[Token, Token]] = None
+            var top_pair: Optional[Pair] = None
 
             while len(heap) > 0:
                 ref candidate = heap.peek()
@@ -143,13 +154,14 @@ struct BPETrainer:
                 break
 
             var top = top_pair.take()
+            var left, right = unpack_pair(top)
 
             var new_id = u32(len(vocab))
 
             # Create the new token, record the mapping to the original byte values.
             timer = Instant.now()
-            var merged = vocab[top[0]].copy()
-            merged.extend(vocab[top[1]].copy())
+            var merged = vocab[left].copy()
+            merged.extend(vocab[right].copy())
             vocab[new_id] = merged^
 
             merges.append(top)
@@ -158,15 +170,23 @@ struct BPETrainer:
             # Merge loop:
             timer = Instant.now()
 
+            # Get the affected word IDs
             var word_ids = List(pair_to_words[top])
 
             for id in word_ids:
                 var count = word_counts[id]
                 ref word = words[id]
 
+                # TODO: this does more work than it needs to.
+                # For every pair in the word, we eagerly remove it from
+                # all memory (even if the pair is unaffected). We then proceed
+                # to rebuild the word and all the pair references again.
+                # Another side effect of this is that we push way more heap entries
+                # than we should. We could instead operate only on the pair in question and its neighbors.
+
                 # Remove stale pair counts and index occurences
                 for i in range(len(word) - 1):
-                    var pair = (word[i], word[i + 1])
+                    var pair = pack_pair(word[i], word[i + 1])
                     ref pc = pair_counts[pair]
                     pc -= count
 
@@ -179,19 +199,28 @@ struct BPETrainer:
                 var i = 0
 
                 while i < len(word):
-                    if i < len(word) - 1 and (word[i], word[i + 1]) == top:
-                        new_word.append(new_id)
+                    var emitted: Token
+
+                    if (
+                        i < len(word) - 1
+                        and word[i] == left
+                        and word[i + 1] == right
+                    ):
+                        emitted = new_id
                         i += 2
                     else:
-                        new_word.append(word[i])
+                        emitted = word[i]
                         i += 1
 
-                for i in range(len(new_word) - 1):
-                    var pair = (new_word[i], new_word[i + 1])
-                    ref pair_count = pair_counts.setdefault(pair, 0)
-                    pair_count += count
-                    heap.push(PairCount(pair=pair, count=pair_count))
-                    pair_to_words.setdefault(pair, Set[u32]()).add(id)
+                    if new_word:
+                        var pair = pack_pair(
+                            new_word[len(new_word) - 1], emitted
+                        )
+
+                        ref pc = pair_counts.setdefault(pair, 0)
+                        pc += count
+                        heap.push(PairCount(pair=pair, count=pc))
+                        pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
                 words[id] = new_word^
 
@@ -215,25 +244,26 @@ struct BPETrainer:
         )
 
 
-def get_pairs(word: TokenString) -> List[Tuple[Token, Token]]:
-    return [(Token(word[i]), Token(word[i + 1])) for i in range(len(word) - 1)]
+def get_pairs(word: TokenString) -> List[Pair]:
+    return [pack_pair(word[i], word[i + 1]) for i in range(len(word) - 1)]
 
 
-def contains_pair(word: TokenString, pair: Tuple[Token, Token]) -> Bool:
+def contains_pair(word: TokenString, pair: Pair) -> Bool:
+    var left, right = unpack_pair(pair)
+
     for i in range(len(word) - 1):
-        if word[i] == pair[0] and word[i + 1] == pair[1]:
+        if word[i] == left and word[i + 1] == right:
             return True
 
     return False
 
 
-def merge_word(
-    word: TokenString, pair: Tuple[Token, Token], new_id: Token
-) -> TokenString:
+def merge_word(word: TokenString, pair: Pair, new_id: Token) -> TokenString:
+    var left, right = unpack_pair(pair)
     var new_word = TokenString()
     var i = 0
     while i < len(word):
-        if i < len(word) - 1 and word[i] == pair[0] and word[i + 1] == pair[1]:
+        if i < len(word) - 1 and word[i] == left and word[i + 1] == right:
             new_word.append(new_id)
             i += 2
         else:
@@ -245,7 +275,7 @@ def merge_word(
 
 @fieldwise_init
 struct PairCount(Comparable, Copyable, Deinitable):
-    var pair: Tuple[Token, Token]
+    var pair: Pair
     var count: int
 
     def __lt__(self, rhs: Self) -> Bool:
