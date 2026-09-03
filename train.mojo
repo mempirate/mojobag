@@ -58,15 +58,16 @@ struct BPETrainer:
         # all of `self` while `self.regex` is borrowed by `for_each_span`.
         var timer = Instant.now()
         var word_counter = Counter[TokenString]()
+        var corpus_utf8 = corpus.as_bytes()
+        # The callback cannot currently capture an origin-bound Span directly.
+        # The corpus remains alive for the entire synchronous traversal.
+        var corpus_ptr = corpus_utf8.unsafe_ptr().as_unsafe_any_origin()
 
-        def count_word(m: MatchSpan) raises {mut word_counter, imm corpus}:
-            var corpus_utf8 = corpus.as_bytes()
-            var word = [
-                Token(b)
-                for b in corpus_utf8.unsafe_subspan(
-                    offset=m.start, length=m.end - m.start
-                )
-            ]
+        def count_word(m: MatchSpan) raises {mut word_counter, imm corpus_ptr}:
+            var length = m.end - m.start
+            var word = TokenString(capacity=length)
+            for i in range(length):
+                word.append(Token(corpus_ptr[unsafe_offset=m.start + i]))
 
             word_counter[word] += 1
 
