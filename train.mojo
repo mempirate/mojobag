@@ -35,12 +35,22 @@ comptime TokenString = List[Token]
 
 struct BPETrainer:
     var regex: Regex
+
     var min_frequency: int
+    var compaction_factor: int
+
     var word_counts: Counter[TokenString]
 
-    def __init__(out self, min_frequency: int) raises:
+    def __init__(
+        out self,
+        min_frequency: int,
+        compaction_factor: int = 2,
+    ) raises:
         self.regex = Regex(gpt5_pattern())
+
         self.min_frequency = min_frequency
+        self.compaction_factor = compaction_factor
+
         self.word_counts = Counter[TokenString]()
 
     def train(mut self, corpus: String, vocab_size: int) raises:
@@ -57,7 +67,9 @@ struct BPETrainer:
         # Keep the accumulator local so the callback does not mutably capture
         # all of `self` while `self.regex` is borrowed by `for_each_span`.
         var timer = Instant.now()
-        var word_counter = Counter[TokenString]()
+
+        var word_counter = Dict[TokenString, int]()
+
         var corpus_utf8 = corpus.as_bytes()
         # The callback cannot currently capture an origin-bound Span directly.
         # The corpus remains alive for the entire synchronous traversal.
@@ -69,7 +81,7 @@ struct BPETrainer:
             for i in range(length):
                 word.append(Token(corpus_ptr[unsafe_offset=m.start + i]))
 
-            word_counter[word] += 1
+            word_counter.setdefault(word^, 0) += 1
 
         var words = Dict[u32, TokenString]()
         var word_counts = Dict[u32, int]()
@@ -122,6 +134,15 @@ struct BPETrainer:
             timer = Instant.now()
 
             var top_pair: Optional[Pair] = None
+
+            # Heap compaction if the heap exceeds active pairs * compaction_factor.
+            if len(heap) > len(pair_counts) * self.compaction_factor:
+                heap.clear()
+
+                for item in pair_counts.items():
+                    var entry = PairCount(pair=item.key, count=item.value)
+
+                    heap.push(entry^)
 
             while len(heap) > 0:
                 ref candidate = heap.peek()
