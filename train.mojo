@@ -18,7 +18,7 @@ from time import Duration, Instant, Profiler
 
 
 def main() raises:
-    with open("corpus.md", "r") as f:
+    with open("data/wikitext-103-raw/wiki.train.raw", "r") as f:
         var corpus = f.read()
 
         print(t"Corpus size: {f32(corpus.byte_length()) / 1e6} MB")
@@ -221,6 +221,8 @@ struct BPETrainer:
                         pc += count
                         heap.push(PairCount(pair=pair, count=pc))
                         pair_to_words.setdefault(pair, Set[u32]()).add(id)
+
+                    new_word.append(emitted)
 
                 words[id] = new_word^
 
