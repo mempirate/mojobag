@@ -1,5 +1,5 @@
 from pcre2 import Regex, MatchSpan
-from common import Token
+from common import Token, int
 
 
 @fieldwise_init
@@ -16,27 +16,18 @@ struct Pretokenizer:
         return Self(whitespace=False, regex=pattern)
 
     def for_each[
-        F: def(var List[Token])
+        F: def(MatchSpan) raises
     ](self, corpus: String, callback: F) raises:
         var corpus_utf8 = corpus.as_bytes()
 
+        # Split with regex
         if self.regex:
             var pattern = self.regex.value()
             var re = Regex(pattern)
 
-            # The callback cannot currently capture an origin-bound Span directly.
-            # The corpus remains alive for the entire synchronous traversal.
-            var corpus_ptr = corpus_utf8.unsafe_ptr().as_unsafe_any_origin()
+            re.for_each_span(corpus, callback)
 
-            def on_match(m: MatchSpan) raises {imm callback, imm corpus_ptr}:
-                var length = m.end - m.start
-                var word = List[Token](capacity=length)
-                for i in range(length):
-                    word.append(Token(corpus_ptr[unsafe_offset=m.start + i]))
-
-                callback(word^)
-
-            re.for_each_span(corpus, on_match)
+        # Split on whitespace
         elif self.whitespace:
             var start = 0
 
@@ -48,21 +39,12 @@ struct Pretokenizer:
 
                 if is_whitespace:
                     if start < end:
-                        # EMIT WORD
-                        var word = List[Token](capacity=end - start)
-                        for c in corpus_utf8[start:end]:
-                            word.append(Token(c))
-
-                        callback(word^)
+                        callback(MatchSpan(start, end))
                     start = end + 1
 
             var end = len(corpus_utf8)
             if start < end:
-                var word = List[Token](capacity=end - start)
-                for c in corpus_utf8[start:end]:
-                    word.append(Token(c))
-
-                callback(word^)
+                callback(MatchSpan(start, end))
 
         else:
             raise "No pretokenizer set. Choose between regex or whitespace."

@@ -29,3 +29,11 @@ def unpack_pair(pair: Pair) -> Tuple[Token, Token]:
     var second = Token(pair & 0xFFFF_FFFF)
 
     return (first, second)
+
+
+@fieldwise_init
+struct MatchSpan(ImplicitlyCopyable):
+    """A half-open byte range in the matched UTF-8 subject."""
+
+    var start: Int
+    var end: Int

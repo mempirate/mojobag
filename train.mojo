@@ -1,5 +1,6 @@
 from std.collections import Counter, Set, BinaryHeap
 from std.utils import Variant
+from std.hashlib import hash
 
 from pretokenize import Pretokenizer, gpt5_pattern
 from pcre2 import MatchSpan, Regex
@@ -78,22 +79,46 @@ struct BPETrainer:
         """
         var timer = Instant.now()
 
+        var corpus_bytes = corpus.as_bytes()
+        var ptr = corpus_bytes.unsafe_ptr().as_unsafe_any_origin()
+
         # NOTE: We could fuse the 2 loops below, but experimentation shows that this was slower.
         # The fused loop is way more complicated, even though it's just O(W), versus the current
         # O(W) + O(unique(W)) where W = number of pretokenized words.
 
-        var word_counter = Dict[List[Token], int]()
+        var hash_to_id = Dict[u64, u32]()
+        var words = Dict[u32, Word]()
+        var counts = Dict[u32, int]()
 
-        def on_word(var word: List[Token]) {mut word_counter}:
-            word_counter.setdefault(word^, 0) += 1
+        def on_word(
+            m: MatchSpan,
+        ) raises {mut hash_to_id, mut words, mut counts, imm ptr}:
+            var length = m.end - m.start
+            # Hash the byte span
+            var h = hash(ptr.unsafe_offset(m.start), length)
+            var existing = hash_to_id.get(h)
+
+            # If this hash already exists, don't reconstruct the word,
+            # just increment count
+            if existing:
+                # TODO: Technically not collision safe
+                counts[existing.value()] += 1
+                return
+
+            var id = u32(len(hash_to_id))
+            var tokens = List[Token](capacity=length)
+
+            for i in range(length):
+                tokens.append(Token(ptr[unsafe_offset=m.start + i]))
+
+            words[id] = Word(tokens)
+            counts[id] = 1
+            hash_to_id[h] = id
 
         self.pretokenizer.for_each(corpus, on_word)
 
-        var id = u32(0)
-        for item in word_counter.items():
-            self.word_counts[id] = item.value
-            self.words[id] = Word(item.key)
-            id += 1
+        self.words = words^
+        self.word_counts = counts^
 
         self.profiler.record("pretokenize", Instant.now().since(timer))
 
@@ -112,9 +137,9 @@ struct BPETrainer:
                 self.pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
         for item in self.pair_counts.items():
-            var entry = PairCount(pair=item.key, count=item.value)
-
-            self.heap.push(entry^)
+            # Don't push the item to the heap if frequency is not eligible
+            if item.value >= self.min_frequency:
+                self.heap.push(PairCount(pair=item.key, count=item.value))
 
         self.profiler.record(
             "initialize pair counts", Instant.now().since(timer)
@@ -259,6 +284,9 @@ struct BPETrainer:
             t"Training throughput:"
             t" {f64(corpus.byte_length()) / 1e6 / elapsed.as_secs()} MB/s"
         )
+
+        print(t"Merges checksum: {hex(hash(merges))}")
+        print(t"Vocab checksum: {hex(hash(vocab))}")
 
 
 def get_pairs(word: Word) -> List[Pair]:

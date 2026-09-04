@@ -1,6 +1,8 @@
 from std.ffi import OwnedDLHandle
 from std.memory import Pointer
 
+from common import MatchSpan
+
 
 comptime _ForeignPtr = Pointer[NoneType, MutUntrackedOrigin]
 comptime _NullableForeignPtr = Optional[_ForeignPtr]
@@ -9,14 +11,6 @@ comptime _PCRE2_UCP = UInt32(0x0002_0000)
 comptime _PCRE2_UTF = UInt32(0x0008_0000)
 comptime _PCRE2_JIT_COMPLETE = UInt32(0x0000_0001)
 comptime _PCRE2_ERROR_NOMATCH = Int32(-1)
-
-
-@fieldwise_init
-struct MatchSpan(ImplicitlyCopyable):
-    """A half-open byte range in the matched UTF-8 subject."""
-
-    var start: Int
-    var end: Int
 
 
 struct Regex(Movable):
