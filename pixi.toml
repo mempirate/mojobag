@@ -5,11 +5,7 @@ platforms = ["linux-64", "osx-arm64"]
 version = "0.1.0"
 
 [tasks]
-main = "mojo run main.mojo"
-test = "mojo run test.mojo"
-pcre2-test = "mojo run test_pcre2.mojo"
-pretoken-bench = "mojo run bench_pretokenize.mojo"
-wikitext-unzip = "unzip -q -o data/wikitext-103-raw-v1.zip -d data/"
+unzip-wikitext = "unzip -q -o data/wikitext-103-raw-v1.zip -d data/"
 profile-build = "mojo build -O3 -g2 --debug-info-language C train.mojo -o .pixi/train-profile"
 # Requires:
 # - sudo sysctl kernel.perf_event_mlock_kb=2048

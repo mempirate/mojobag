@@ -20,7 +20,6 @@ from common import (
 )
 from time import Duration, Instant, Profiler
 
-# comptime CORPUS = "corpus.md"
 comptime CORPUS = "data/wikitext-103-raw/wiki.train.raw"
 
 
@@ -84,10 +83,6 @@ struct BPETrainer:
 
         var corpus_bytes = corpus.as_bytes()
         var ptr = corpus_bytes.unsafe_ptr().as_unsafe_any_origin()
-
-        # NOTE: We could fuse the 2 loops below, but experimentation shows that this was slower.
-        # The fused loop is way more complicated, even though it's just O(W), versus the current
-        # O(W) + O(unique(W)) where W = number of pretokenized words.
 
         var hash_to_id = Dict[u64, u32]()
         var words = List[Word]()
