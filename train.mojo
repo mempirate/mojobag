@@ -2,7 +2,8 @@ from std.collections import Counter, Set, BinaryHeap
 
 from pretokenize import gpt5_pattern
 from pcre2 import MatchSpan, Regex
-from main import (
+from word import Word
+from common import (
     Pair,
     Token,
     f32,
@@ -11,6 +12,7 @@ from main import (
     pack_pair,
     u32,
     u64,
+    i32,
     unpack_pair,
     usize,
 )
@@ -30,16 +32,20 @@ def main() raises:
         trainer.train(corpus, 50000)
 
 
-comptime TokenString = List[Token]
-
-
 struct BPETrainer:
     var regex: Regex
 
     var min_frequency: int
     var compaction_factor: int
 
-    var word_counts: Counter[TokenString]
+    var words: Dict[u32, Word]
+    var word_counts: Dict[u32, int]
+    var pair_counts: Dict[Pair, int]
+    # Reverse index to the set of words containing the pair specified by the key.
+    var pair_to_words: Dict[Pair, Set[u32]]
+    var heap: BinaryHeap[PairCount]
+
+    var profiler: Profiler
 
     def __init__(
         out self,
@@ -51,24 +57,25 @@ struct BPETrainer:
         self.min_frequency = min_frequency
         self.compaction_factor = compaction_factor
 
-        self.word_counts = Counter[TokenString]()
+        self.words = Dict[u32, Word]()
+        self.word_counts = Dict[u32, int]()
+        self.pair_counts = Dict[Pair, int]()
+        # Reverse index from pairs to word IDs that contain said pair.
+        self.pair_to_words = Dict[Pair, Set[u32]]()
+        self.heap = BinaryHeap[PairCount]()
 
-    def train(mut self, corpus: String, vocab_size: int) raises:
-        var profiler = Profiler()
-        var start = Instant.now()
+        self.profiler = Profiler()
 
-        # Build up the initial vocabulary. This is a mapping from token indices
-        # to their values. For the initial 256 bytes, this will be byte -> byte.
-        var vocab: Dict[Token, List[Byte]] = {
-            id: (List([Byte(id)])) for id in range(Token(256))
-        }
-        profiler.record("initialize vocabulary", Instant.now().since(start))
-
+    def pretokenize(mut self, corpus: String) raises:
+        """
+        Pretokenizes the corpus according to the specified regex pattern (self.regex), and
+        stores the resulting words and word counts in self.
+        """
         # Keep the accumulator local so the callback does not mutably capture
         # all of `self` while `self.regex` is borrowed by `for_each_span`.
         var timer = Instant.now()
 
-        var word_counter = Dict[TokenString, int]()
+        var word_counter = Dict[List[Token], int]()
 
         var corpus_utf8 = corpus.as_bytes()
         # The callback cannot currently capture an origin-bound Span directly.
@@ -77,48 +84,106 @@ struct BPETrainer:
 
         def count_word(m: MatchSpan) raises {mut word_counter, imm corpus_ptr}:
             var length = m.end - m.start
-            var word = TokenString(capacity=length)
+            var word = List[Token](capacity=length)
             for i in range(length):
                 word.append(Token(corpus_ptr[unsafe_offset=m.start + i]))
 
             word_counter.setdefault(word^, 0) += 1
 
-        var words = Dict[u32, TokenString]()
-        var word_counts = Dict[u32, int]()
-
         self.regex.for_each_span(corpus, count_word)
 
-        for id, item in enumerate(word_counter.items()):
-            words[u32(id)] = item.key.copy()
-            word_counts[u32(id)] = item.value
+        var id = u32(0)
+        for item in word_counter.items():
+            self.word_counts[id] = item.value
+            self.words[id] = Word(item.key)
+            id += 1
 
-        profiler.record("pretokenize", Instant.now().since(timer))
+        self.profiler.record("pretokenize", Instant.now().since(timer))
 
-        var num_merges = vocab_size - len(vocab)
+    def initial_count(mut self) raises:
+        var timer = Instant.now()
 
-        timer = Instant.now()
-        var pair_counts = Dict[Pair, int]()
-        # Reverse index from pairs to word IDs that contain said pair.
-        var pair_to_words = Dict[Pair, Set[u32]]()
-
-        for item in word_counts.items():
+        for item in self.word_counts.items():
             ref id = item.key
             var count = item.value
 
-            ref word = words[id]
+            ref word = self.words[id]
 
             for i in range(len(word) - 1):
                 var pair = pack_pair(word[i], word[i + 1])
-                pair_counts.setdefault(pair, 0) += count
-                pair_to_words.setdefault(pair, Set[u32]()).add(id)
+                self.pair_counts.setdefault(pair, 0) += count
+                self.pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
-        var heap = BinaryHeap[PairCount]()
-        for item in pair_counts.items():
+        for item in self.pair_counts.items():
             var entry = PairCount(pair=item.key, count=item.value)
 
-            heap.push(entry^)
+            self.heap.push(entry^)
 
-        profiler.record("initialize pair counts", Instant.now().since(timer))
+        self.profiler.record(
+            "initialize pair counts", Instant.now().since(timer)
+        )
+
+    def find_top_pair(mut self) raises -> Optional[Pair]:
+        var top_pair: Optional[Pair] = None
+
+        while len(self.heap) > 0:
+            ref candidate = self.heap.peek()
+
+            # Pop removed pairs
+            if candidate.pair not in self.pair_counts:
+                _ = self.heap.pop()
+
+                continue
+
+            var actual_count = self.pair_counts[candidate.pair]
+
+            # Pop useless pair counts
+            if actual_count < self.min_frequency:
+                _ = self.heap.pop()
+
+                continue
+
+            if candidate.count != actual_count:
+                # Update stale candidate
+                var pair = candidate.pair
+
+                _ = self.heap.pop()
+                self.heap.push(PairCount(pair=pair, count=actual_count))
+
+                continue
+
+            top_pair = candidate.pair
+            break
+
+        # Heap compaction if the heap exceeds active pairs * compaction_factor.
+        if len(self.heap) > len(self.pair_counts) * self.compaction_factor:
+            self.heap.clear()
+
+            for item in self.pair_counts.items():
+                var entry = PairCount(pair=item.key, count=item.value)
+
+                self.heap.push(entry^)
+
+        return top_pair
+
+    def train(mut self, corpus: String, vocab_size: int) raises:
+        var start = Instant.now()
+
+        # Build up the initial vocabulary. This is a mapping from token indices
+        # to their values. For the initial 256 bytes, this will be byte -> byte.
+        var vocab: Dict[Token, List[Byte]] = {
+            id: (List([Byte(id)])) for id in range(Token(256))
+        }
+
+        self.profiler.record(
+            "initialize vocabulary", Instant.now().since(start)
+        )
+
+        self.pretokenize(corpus)
+
+        self.initial_count()
+
+        var num_merges = vocab_size - len(vocab)
 
         var merges = List[Pair]()
 
@@ -127,51 +192,13 @@ struct BPETrainer:
         var merge_words_duration = Duration(0)
 
         for _ in range(num_merges):
-            if not pair_counts:
+            if not self.pair_counts:
                 break
+
+            var timer = Instant.now()
 
             # Get the most common pair
-            timer = Instant.now()
-
-            var top_pair: Optional[Pair] = None
-
-            # Heap compaction if the heap exceeds active pairs * compaction_factor.
-            if len(heap) > len(pair_counts) * self.compaction_factor:
-                heap.clear()
-
-                for item in pair_counts.items():
-                    var entry = PairCount(pair=item.key, count=item.value)
-
-                    heap.push(entry^)
-
-            while len(heap) > 0:
-                ref candidate = heap.peek()
-
-                # Pop removed pairs
-                if candidate.pair not in pair_counts:
-                    _ = heap.pop()
-
-                    continue
-
-                var actual_count = pair_counts[candidate.pair]
-
-                # Pop useless pair counts
-                if actual_count < self.min_frequency:
-                    _ = heap.pop()
-
-                    continue
-
-                if candidate.count != actual_count:
-                    # Update stale candidate
-                    var pair = candidate.pair
-
-                    _ = heap.pop()
-                    heap.push(PairCount(pair=pair, count=actual_count))
-
-                    continue
-
-                top_pair = candidate.pair
-                break
+            var top_pair = self.find_top_pair()
 
             select_pair_duration += Instant.now().since(timer)
 
@@ -196,83 +223,35 @@ struct BPETrainer:
             timer = Instant.now()
 
             # Get the affected word IDs
-            var word_ids = List(pair_to_words[top])
+            var word_ids = List(self.pair_to_words[top])
 
             for id in word_ids:
-                var count = word_counts[id]
-                ref word = words[id]
+                ref word = self.words[id]
+                var deltas = word.merge(left, right, new_id)
 
-                var new_word = TokenString()
-                var deltas = Dict[Pair, int]()
-                var old_pairs = Set[Pair]()
-                var new_pairs = Set[Pair]()
-                var i = 0
+                for pair, diff in deltas:
+                    ref count = self.pair_counts.setdefault(pair, 0)
+                    count += diff * self.word_counts[id]
 
-                while i < len(word):
-                    var emitted: Token
+                    if count <= 0:
+                        _ = self.pair_counts.pop(pair)
+                    elif diff > 0:
+                        self.heap.push(PairCount(pair, count))
+                        self.pair_to_words.setdefault(pair, Set[u32]()).add(id)
 
-                    if i < len(word) - 1:
-                        var pair = pack_pair(word[i], word[i + 1])
-                        deltas.setdefault(pair, 0) -= count
-                        old_pairs.add(pair)
-
-                    if (
-                        i < len(word) - 1
-                        and word[i] == left
-                        and word[i + 1] == right
-                    ):
-                        emitted = new_id
-                        if i < len(word) - 2:
-                            var pair = pack_pair(word[i + 1], word[i + 2])
-                            deltas.setdefault(pair, 0) -= count
-                            old_pairs.add(pair)
-                        i += 2
-                    else:
-                        emitted = word[i]
-                        i += 1
-
-                    if new_word:
-                        var pair = pack_pair(
-                            new_word[len(new_word) - 1], emitted
-                        )
-                        deltas.setdefault(pair, 0) += count
-                        new_pairs.add(pair)
-
-                    new_word.append(emitted)
-
-                for item in deltas.items():
-                    if item.value == 0:
-                        continue
-
-                    ref pc = pair_counts.setdefault(item.key, 0)
-                    pc += item.value
-                    if pc <= 0:
-                        _ = pair_counts.pop(item.key)
-                    elif item.value > 0:
-                        heap.push(PairCount(pair=item.key, count=pc))
-
-                for pair in old_pairs:
-                    if pair not in new_pairs:
-                        pair_to_words[pair].discard(id)
-
-                for pair in new_pairs:
-                    if pair not in old_pairs:
-                        pair_to_words.setdefault(pair, Set[u32]()).add(id)
-
-                words[id] = new_word^
-
-            _ = pair_to_words.pop(top)
+            # The selected pair has been merged in every indexed word.
+            _ = self.pair_to_words.pop(top)
 
             merge_words_duration += Instant.now().since(timer)
 
         # Total elapsed time
         var elapsed = Instant.now().since(start)
 
-        profiler.record("merge words", merge_words_duration)
-        profiler.record("top pair", select_pair_duration)
-        profiler.record("update vocabulary", update_vocabulary_duration)
+        self.profiler.record("merge words", merge_words_duration)
+        self.profiler.record("top pair", select_pair_duration)
+        self.profiler.record("update vocabulary", update_vocabulary_duration)
 
-        print(profiler)
+        print(self.profiler)
         print(t"Number of merges: {len(merges)}")
         print(t"Vocab size: {len(vocab)}")
         print(
@@ -281,11 +260,11 @@ struct BPETrainer:
         )
 
 
-def get_pairs(word: TokenString) -> List[Pair]:
+def get_pairs(word: Word) -> List[Pair]:
     return [pack_pair(word[i], word[i + 1]) for i in range(len(word) - 1)]
 
 
-def contains_pair(word: TokenString, pair: Pair) -> Bool:
+def contains_pair(word: Word, pair: Pair) -> Bool:
     var left, right = unpack_pair(pair)
 
     for i in range(len(word) - 1):
@@ -293,21 +272,6 @@ def contains_pair(word: TokenString, pair: Pair) -> Bool:
             return True
 
     return False
-
-
-def merge_word(word: TokenString, pair: Pair, new_id: Token) -> TokenString:
-    var left, right = unpack_pair(pair)
-    var new_word = TokenString()
-    var i = 0
-    while i < len(word):
-        if i < len(word) - 1 and word[i] == left and word[i + 1] == right:
-            new_word.append(new_id)
-            i += 2
-        else:
-            new_word.append(word[i])
-            i += 1
-
-    return new_word^
 
 
 @fieldwise_init
