@@ -23,6 +23,7 @@ struct Regex(Movable):
     var _lib: OwnedDLHandle
     var _code: _NullableForeignPtr
     var _match_data: _NullableForeignPtr
+    var _use_jit: Bool
 
     def __init__(out self, pattern: String) raises:
         comptime if CompilationTarget.is_macos():
@@ -31,6 +32,7 @@ struct Regex(Movable):
             self._lib = OwnedDLHandle("libpcre2-8.so")
         self._code = None
         self._match_data = None
+        self._use_jit = False
 
         var error_code = Int32(0)
         var error_offset = UInt(0)
@@ -59,8 +61,7 @@ struct Regex(Movable):
         var jit_result = self._lib.call["pcre2_jit_compile_8", Int32](
             self._code.value(), _PCRE2_JIT_COMPLETE
         )
-        if jit_result != 0:
-            raise Error("PCRE2 JIT compilation failed with error ", jit_result)
+        self._use_jit = jit_result == 0
 
         var match_data = self._lib.call[
             "pcre2_match_data_create_from_pattern_8", _NullableForeignPtr
@@ -88,7 +89,11 @@ struct Regex(Movable):
         var subject = text.as_bytes()
         var subject_length = UInt(len(subject))
         var null_context: _NullableForeignPtr = None
-        var rc = self._lib.call["pcre2_jit_match_8", Int32](
+        var match_name = (
+            "pcre2_jit_match_8" if self._use_jit else "pcre2_match_8"
+        )
+        var match_fn = self._lib.get_function[Int32](match_name)
+        var rc = match_fn(
             self._code.value(),
             subject.unsafe_ptr(),
             subject_length,
@@ -136,7 +141,10 @@ struct Regex(Movable):
         var subject_length = UInt(len(subject))
         var offset = UInt(0)
         var null_context: _NullableForeignPtr = None
-        var match_fn = self._lib.get_function[Int32]("pcre2_jit_match_8")
+        var match_name = (
+            "pcre2_jit_match_8" if self._use_jit else "pcre2_match_8"
+        )
+        var match_fn = self._lib.get_function[Int32](match_name)
         var ovector_fn = self._lib.get_function[
             Pointer[UInt, MutUntrackedOrigin]
         ]("pcre2_get_ovector_pointer_8")
