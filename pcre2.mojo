@@ -1,5 +1,6 @@
 from std.ffi import OwnedDLHandle
 from std.memory import Pointer
+from std.sys import CompilationTarget
 
 from common import MatchSpan
 
@@ -24,7 +25,10 @@ struct Regex(Movable):
     var _match_data: _NullableForeignPtr
 
     def __init__(out self, pattern: String) raises:
-        self._lib = OwnedDLHandle("libpcre2-8.so")
+        comptime if CompilationTarget.is_macos():
+            self._lib = OwnedDLHandle("libpcre2-8.dylib")
+        else:
+            self._lib = OwnedDLHandle("libpcre2-8.so")
         self._code = None
         self._match_data = None
 
