@@ -43,8 +43,10 @@ struct BPETrainer:
     var min_frequency: int
     var compaction_factor: int
 
-    var words: Dict[u32, Word]
-    var word_counts: Dict[u32, int]
+    # Shared indices
+    var words: List[Word]
+    var word_counts: List[int]
+
     var pair_counts: Dict[Pair, int]
     # Reverse index to the set of words containing the pair specified by the key.
     var pair_to_words: Dict[Pair, Set[u32]]
@@ -63,8 +65,9 @@ struct BPETrainer:
         self.min_frequency = min_frequency
         self.compaction_factor = compaction_factor
 
-        self.words = Dict[u32, Word]()
-        self.word_counts = Dict[u32, int]()
+        self.words = List[Word]()
+        self.word_counts = List[int]()
+
         self.pair_counts = Dict[Pair, int]()
         # Reverse index from pairs to word IDs that contain said pair.
         self.pair_to_words = Dict[Pair, Set[u32]]()
@@ -87,8 +90,8 @@ struct BPETrainer:
         # O(W) + O(unique(W)) where W = number of pretokenized words.
 
         var hash_to_id = Dict[u64, u32]()
-        var words = Dict[u32, Word]()
-        var counts = Dict[u32, int]()
+        var words = List[Word]()
+        var counts = List[int]()
 
         def on_word(
             m: MatchSpan,
@@ -111,8 +114,8 @@ struct BPETrainer:
             for i in range(length):
                 tokens.append(Token(ptr[unsafe_offset=m.start + i]))
 
-            words[id] = Word(tokens)
-            counts[id] = 1
+            words.append(Word(tokens))
+            counts.append(1)
             hash_to_id[h] = id
 
         self.pretokenizer.for_each(corpus, on_word)
@@ -125,16 +128,13 @@ struct BPETrainer:
     def initial_count(mut self) raises:
         var timer = Instant.now()
 
-        for item in self.word_counts.items():
-            ref id = item.key
-            var count = item.value
-
+        for id, count in enumerate(self.word_counts):
             ref word = self.words[id]
 
             for i in range(len(word) - 1):
                 var pair = pack_pair(word[i], word[i + 1])
                 self.pair_counts.setdefault(pair, 0) += count
-                self.pair_to_words.setdefault(pair, Set[u32]()).add(id)
+                self.pair_to_words.setdefault(pair, Set[u32]()).add(u32(id))
 
         for item in self.pair_counts.items():
             # Don't push the item to the heap if frequency is not eligible
