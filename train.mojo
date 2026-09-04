@@ -1,6 +1,7 @@
 from std.collections import Counter, Set, BinaryHeap
+from std.utils import Variant
 
-from pretokenize import gpt5_pattern
+from pretokenize import Pretokenizer, gpt5_pattern
 from pcre2 import MatchSpan, Regex
 from word import Word
 from common import (
@@ -28,12 +29,15 @@ def main() raises:
 
         print(t"Corpus size: {f32(corpus.byte_length()) / 1e6} MB")
 
-        var trainer = BPETrainer(min_frequency=1)
+        var trainer = BPETrainer(
+            min_frequency=1,
+            pretokenizer=Pretokenizer.with_regex(gpt5_pattern()),
+        )
         trainer.train(corpus, 50000)
 
 
 struct BPETrainer:
-    var regex: Regex
+    var pretokenizer: Pretokenizer
 
     var min_frequency: int
     var compaction_factor: int
@@ -50,9 +54,10 @@ struct BPETrainer:
     def __init__(
         out self,
         min_frequency: int,
+        var pretokenizer: Pretokenizer,
         compaction_factor: int = 2,
     ) raises:
-        self.regex = Regex(gpt5_pattern())
+        self.pretokenizer = pretokenizer^
 
         self.min_frequency = min_frequency
         self.compaction_factor = compaction_factor
@@ -71,26 +76,18 @@ struct BPETrainer:
         Pretokenizes the corpus according to the specified regex pattern (self.regex), and
         stores the resulting words and word counts in self.
         """
-        # Keep the accumulator local so the callback does not mutably capture
-        # all of `self` while `self.regex` is borrowed by `for_each_span`.
         var timer = Instant.now()
+
+        # NOTE: We could fuse the 2 loops below, but experimentation shows that this was slower.
+        # The fused loop is way more complicated, even though it's just O(W), versus the current
+        # O(W) + O(unique(W)) where W = number of pretokenized words.
 
         var word_counter = Dict[List[Token], int]()
 
-        var corpus_utf8 = corpus.as_bytes()
-        # The callback cannot currently capture an origin-bound Span directly.
-        # The corpus remains alive for the entire synchronous traversal.
-        var corpus_ptr = corpus_utf8.unsafe_ptr().as_unsafe_any_origin()
-
-        def count_word(m: MatchSpan) raises {mut word_counter, imm corpus_ptr}:
-            var length = m.end - m.start
-            var word = List[Token](capacity=length)
-            for i in range(length):
-                word.append(Token(corpus_ptr[unsafe_offset=m.start + i]))
-
+        def on_word(var word: List[Token]) {mut word_counter}:
             word_counter.setdefault(word^, 0) += 1
 
-        self.regex.for_each_span(corpus, count_word)
+        self.pretokenizer.for_each(corpus, on_word)
 
         var id = u32(0)
         for item in word_counter.items():
@@ -224,20 +221,24 @@ struct BPETrainer:
 
             # Get the affected word IDs
             var word_ids = List(self.pair_to_words[top])
+            var deltas = List[Tuple[Pair, int]]()
 
             for id in word_ids:
                 ref word = self.words[id]
-                var deltas = word.merge(left, right, new_id)
+                ref wc = self.word_counts[id]
+                word.merge(left, right, new_id, deltas)
 
                 for pair, diff in deltas:
                     ref count = self.pair_counts.setdefault(pair, 0)
-                    count += diff * self.word_counts[id]
+                    count += diff * wc
 
                     if count <= 0:
                         _ = self.pair_counts.pop(pair)
                     elif diff > 0:
                         self.heap.push(PairCount(pair, count))
                         self.pair_to_words.setdefault(pair, Set[u32]()).add(id)
+
+                deltas.clear()
 
             # The selected pair has been merged in every indexed word.
             _ = self.pair_to_words.pop(top)

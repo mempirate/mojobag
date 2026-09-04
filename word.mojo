@@ -9,7 +9,7 @@ struct Symbol(Copyable, Equatable, Hashable):
     var dead: Bool
 
 
-struct Word(Copyable, Equatable, Hashable, Movable, Sized, Writable):
+struct Word(Copyable, Movable, Sized, Writable):
     var symbols: List[Symbol]
 
     def __init__(out self, capacity: int = 0):
@@ -73,12 +73,15 @@ struct Word(Copyable, Equatable, Hashable, Movable, Sized, Writable):
         return False
 
     def merge(
-        mut self, left: Token, right: Token, new: Token
-    ) -> List[Tuple[Pair, int]]:
+        mut self,
+        left: Token,
+        right: Token,
+        new: Token,
+        mut deltas: List[Tuple[Pair, int]],
+    ):
         """
         Merges (`left`, `right`) into `new` in place. Returns all pair count deltas.
         """
-        var deltas = List[Tuple[Pair, int]]()
         var i: i32 = 0
         ref symbols = self.symbols
 
@@ -127,8 +130,6 @@ struct Word(Copyable, Equatable, Hashable, Movable, Sized, Writable):
                 symbols[i] = new_symbol^
 
             i = next
-
-        return deltas^
 
     def write_to(self, mut writer: Some[Writer]):
         var bytes = List[Byte](capacity=len(self.symbols))
