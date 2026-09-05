@@ -254,6 +254,8 @@ struct BPETrainer:
 
                     if count <= 0:
                         _ = self.pair_counts.pop(pair)
+                        if pair != top:
+                            _ = self.pair_to_words.pop(pair)
                     elif diff > 0:
                         self.heap.push(PairCount(pair, count))
                         self.pair_to_words.setdefault(pair, Set[u32]()).add(id)
