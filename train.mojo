@@ -5,6 +5,7 @@ from std.hashlib import hash
 from pretokenize import Pretokenizer, gpt5_pattern
 from pcre2 import MatchSpan, Regex
 from word import Word
+from hasher import NilHasher
 from common import (
     Pair,
     Token,
@@ -84,7 +85,7 @@ struct BPETrainer:
         var corpus_bytes = corpus.as_bytes()
         var ptr = corpus_bytes.unsafe_ptr().as_unsafe_any_origin()
 
-        var hash_to_id = Dict[u64, u32]()
+        var hash_to_id = Dict[u64, u32, NilHasher]()
         var words = List[Word]()
         var counts = List[int]()
 
