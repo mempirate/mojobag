@@ -9,6 +9,7 @@ from common import MatchSpan
 comptime _ForeignPtr = Pointer[NoneType, MutUntrackedOrigin]
 comptime _NullableForeignPtr = Optional[_ForeignPtr]
 
+comptime _PCRE2_ANCHORED = UInt32(0x8000_0000)
 comptime _PCRE2_UCP = UInt32(0x0002_0000)
 comptime _PCRE2_UTF = UInt32(0x0008_0000)
 comptime _PCRE2_JIT_COMPLETE = UInt32(0x0000_0001)
@@ -28,7 +29,8 @@ struct Regex(Movable):
     var _code: _NullableForeignPtr
     var _match_data: _NullableForeignPtr
 
-    def __init__(out self, pattern: String) raises:
+    def __init__(out self, pattern: String, *, anchored: Bool = False) raises:
+        """Compile a pattern; anchored=True matches only at the supplied offset."""
         comptime if CompilationTarget.is_macos():
             self._lib = OwnedDLHandle("libpcre2-8.dylib")
         else:
@@ -44,7 +46,7 @@ struct Regex(Movable):
         var code = self._lib.call["pcre2_compile_8", _NullableForeignPtr](
             pattern_bytes.unsafe_ptr(),
             UInt(len(pattern_bytes)),
-            _PCRE2_UTF | _PCRE2_UCP,
+            _PCRE2_UTF | _PCRE2_UCP | (_PCRE2_ANCHORED if anchored else UInt32(0)),
             Pointer(to=error_code),
             Pointer(to=error_offset),
             null_context,
@@ -163,6 +165,8 @@ struct Regex(Movable):
             Pointer[UInt, MutUntrackedOrigin]
         ]("pcre2_get_ovector_pointer_8")
 
+        # The offset vector stays in the reused match-data block.
+        var ovector = ovector_fn(self._match_data.value())
         while offset < subject_length:
             var rc = match_fn(
                 self._code.value(),
@@ -180,7 +184,6 @@ struct Regex(Movable):
             if rc < 0:
                 raise Error("PCRE2 matching failed with error ", rc)
 
-            var ovector = ovector_fn(self._match_data.value())
             var start = ovector[unsafe_offset=0]
             var end = ovector[unsafe_offset=1]
 

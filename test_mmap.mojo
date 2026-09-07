@@ -42,8 +42,8 @@ def test_pretokenize_mapping() raises:
         var text = file.read()
         for whitespace in range(2):
             var mode = (
-                Pretokenizer.with_whitespace() if whitespace else
-                Pretokenizer.with_regex(gpt5_pattern())
+                Pretokenizer.whitespace() if whitespace else
+                Pretokenizer.regex(gpt5_pattern(), anchored=True)
             )
             var expected = List[Int]()
             var actual = List[Int]()

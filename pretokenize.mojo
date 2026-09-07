@@ -4,16 +4,22 @@ from common import Token, int
 
 @fieldwise_init
 struct Pretokenizer:
-    var whitespace: Bool
-    var regex: Optional[String]
+    var _whitespace: Bool
+    var _regex: Optional[String]
+    var _anchored: Bool
 
     @staticmethod
-    def with_whitespace() -> Self:
-        return Self(whitespace=True, regex=None)
+    def whitespace() -> Self:
+        return Self(_whitespace=True, _regex=None, _anchored=False)
 
     @staticmethod
-    def with_regex(pattern: String) -> Self:
-        return Self(whitespace=False, regex=pattern)
+    def regex(pattern: String, *, anchored: Bool = False) -> Self:
+        """Use anchored=True only for patterns that cover every input byte.
+
+        Anchoring avoids searching ahead. Unmatched input raises instead of
+        silently dropping the rest of the corpus.
+        """
+        return Self(_whitespace=False, _regex=pattern, _anchored=anchored)
 
     def for_each[
         F: def(MatchSpan) raises
@@ -30,14 +36,23 @@ struct Pretokenizer:
         """
 
         # Split with regex
-        if self.regex:
-            var pattern = self.regex.value()
-            var re = Regex(pattern)
+        if self._regex:
+            var pattern = self._regex.value()
+            var re = Regex(pattern, anchored=self._anchored)
 
-            re.for_each_span(corpus_utf8, callback)
+            if self._anchored:
+                var end = 0
+                def visit(span: MatchSpan) raises {mut end, imm callback}:
+                    callback(span)
+                    end = span.end
+                re.for_each_span(corpus_utf8, visit)
+                if end != len(corpus_utf8):
+                    raise Error("Anchored pretokenizer failed at byte ", end)
+            else:
+                re.for_each_span(corpus_utf8, callback)
 
         # Split on whitespace
-        elif self.whitespace:
+        elif self._whitespace:
             var start = 0
 
             for end in range(len(corpus_utf8)):

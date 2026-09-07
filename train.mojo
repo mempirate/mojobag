@@ -29,7 +29,8 @@ comptime CORPUS_PATH = "data/wikitext-103-raw/wiki.train.raw"
 def main() raises:
     var trainer = BPETrainer(
         min_frequency=1,
-        pretokenizer=Pretokenizer.with_regex(gpt5_pattern()),
+        pretokenizer=Pretokenizer.regex(gpt5_pattern(), anchored=True),
+        # pretokenizer=Pretokenizer.with_whitespace(),
     )
 
     trainer.train(CORPUS_PATH, 50000)
@@ -93,6 +94,7 @@ struct BPETrainer:
         var words = List[Word]()
         var counts = List[int]()
 
+        @always_inline
         def on_word(
             m: MatchSpan,
         ) raises {mut hash_to_id, mut words, mut counts, imm ptr}:
@@ -290,7 +292,7 @@ struct BPETrainer:
         print(t"Vocab size: {len(vocab)}")
         print(
             t"Training throughput:"
-            t" {f64(corpus_size) / 1e6 / elapsed.as_secs()} MB/s"
+            t" {f32(corpus_size) / 1e6 / f32(elapsed.as_secs())} MB/s"
         )
 
         print(t"Merges checksum: {hex(hash(merges))}")
