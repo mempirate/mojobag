@@ -1,6 +1,7 @@
 from std.collections import Counter, Set, BinaryHeap
 from std.utils import Variant
 from std.hashlib import hash
+from std.os.path import exists, getsize
 
 from pretokenize import Pretokenizer, gpt5_pattern
 from pcre2 import MatchSpan, Regex
@@ -189,6 +190,11 @@ struct BPETrainer:
         return top_pair
 
     def train(mut self, corpus_path: String, vocab_size: int) raises:
+        if not exists(corpus_path):
+            raise Error("Corpus file does not exist: ", corpus_path)
+
+        print(t"Corpus size: {f32(getsize(corpus_path)) / 1e6} MB")
+
         var start = Instant.now()
 
         # Build up the initial vocabulary. This is a mapping from token indices
