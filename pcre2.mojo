@@ -1,5 +1,6 @@
 from std.ffi import OwnedDLHandle
 from std.memory import Pointer
+from std.os import abort
 from std.sys import CompilationTarget
 
 from common import MatchSpan
@@ -11,19 +12,21 @@ comptime _NullableForeignPtr = Optional[_ForeignPtr]
 comptime _PCRE2_UCP = UInt32(0x0002_0000)
 comptime _PCRE2_UTF = UInt32(0x0008_0000)
 comptime _PCRE2_JIT_COMPLETE = UInt32(0x0000_0001)
+comptime _PCRE2_INFO_JITSIZE = UInt32(10)
 comptime _PCRE2_ERROR_NOMATCH = Int32(-1)
 
 
 struct Regex(Movable):
     """An owning, JIT-compiled wrapper around PCRE2's 8-bit API.
 
+    JIT compilation is mandatory; failure aborts the process. Subjects must
+    be valid UTF-8: the direct JIT API does not validate them.
     The match-data buffer is reused, so a value must not be used concurrently.
     """
 
     var _lib: OwnedDLHandle
     var _code: _NullableForeignPtr
     var _match_data: _NullableForeignPtr
-    var _use_jit: Bool
 
     def __init__(out self, pattern: String) raises:
         comptime if CompilationTarget.is_macos():
@@ -32,7 +35,6 @@ struct Regex(Movable):
             self._lib = OwnedDLHandle("libpcre2-8.so")
         self._code = None
         self._match_data = None
-        self._use_jit = False
 
         var error_code = Int32(0)
         var error_offset = UInt(0)
@@ -61,8 +63,17 @@ struct Regex(Movable):
         var jit_result = self._lib.call["pcre2_jit_compile_8", Int32](
             self._code.value(), _PCRE2_JIT_COMPLETE
         )
-        self._use_jit = jit_result == 0
-
+        if jit_result != 0:
+            abort(
+                String("PCRE2 JIT compilation required; error ") + String(jit_result)
+            )
+        # A pattern can explicitly disable JIT with (*NO_JIT).
+        var jit_size = UInt(0)
+        var info_result = self._lib.call["pcre2_pattern_info_8", Int32](
+            self._code.value(), _PCRE2_INFO_JITSIZE, Pointer(to=jit_size)
+        )
+        if info_result != 0 or jit_size == 0:
+            abort("PCRE2 JIT compilation required; no JIT code available")
         var match_data = self._lib.call[
             "pcre2_match_data_create_from_pattern_8", _NullableForeignPtr
         ](self._code.value(), null_context)
@@ -89,10 +100,7 @@ struct Regex(Movable):
         var subject = text.as_bytes()
         var subject_length = UInt(len(subject))
         var null_context: _NullableForeignPtr = None
-        var match_name = (
-            "pcre2_jit_match_8" if self._use_jit else "pcre2_match_8"
-        )
-        var match_fn = self._lib.get_function[Int32](match_name)
+        var match_fn = self._lib.get_function[Int32]("pcre2_jit_match_8")
         var rc = match_fn(
             self._code.value(),
             subject.unsafe_ptr(),
@@ -134,17 +142,23 @@ struct Regex(Movable):
 
     def for_each_span[
         FuncType: def(MatchSpan) raises -> None
-    ](self, text: String, func: FuncType) raises:
-        """Call `func` for each match without allocating a match list."""
+    ](self, text: String, callback: FuncType) raises:
+        """Call `callback` for each match without allocating a match list."""
 
-        var subject = text.as_bytes()
+        self.for_each_span(text.as_bytes(), callback)
+
+    def for_each_span[
+        FuncType: def(MatchSpan) raises -> None
+    ](self, subject: Span[Byte, _], callback: FuncType) raises:
+        """Match borrowed UTF-8 bytes without copying the subject.
+
+        The subject must be complete, valid UTF-8. Callbacks run synchronously
+        while it is borrowed; offsets are relative to this byte view.
+        """
         var subject_length = UInt(len(subject))
         var offset = UInt(0)
         var null_context: _NullableForeignPtr = None
-        var match_name = (
-            "pcre2_jit_match_8" if self._use_jit else "pcre2_match_8"
-        )
-        var match_fn = self._lib.get_function[Int32](match_name)
+        var match_fn = self._lib.get_function[Int32]("pcre2_jit_match_8")
         var ovector_fn = self._lib.get_function[
             Pointer[UInt, MutUntrackedOrigin]
         ]("pcre2_get_ovector_pointer_8")
@@ -162,6 +176,7 @@ struct Regex(Movable):
 
             if rc == _PCRE2_ERROR_NOMATCH:
                 break
+
             if rc < 0:
                 raise Error("PCRE2 matching failed with error ", rc)
 
@@ -172,5 +187,6 @@ struct Regex(Movable):
             if end <= start:
                 raise Error("zero-length matches are not supported")
 
-            func(MatchSpan(Int(start), Int(end)))
+            callback(MatchSpan(Int(start), Int(end)))
+
             offset = end

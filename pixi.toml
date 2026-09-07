@@ -12,6 +12,8 @@ profile-build = "mojo build -O3 -g2 --debug-info-language C train.mojo -o .pixi/
 # - echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 profile = { cmd = "samply record ./.pixi/train-profile", depends-on = ["profile-build"] }
 
+train = "mojo run -O3 -g2 train.mojo"
+
 [dependencies]
 mojo = ">=1.0.0,<2"
 git-lfs = ">=3.8.0,<4"

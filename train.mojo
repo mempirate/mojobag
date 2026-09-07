@@ -4,8 +4,8 @@ from std.hashlib import hash
 
 from pretokenize import Pretokenizer, gpt5_pattern
 from pcre2 import MatchSpan, Regex
+from mmap import MappedFile
 from word import Word
-from hasher import NilHasher
 from common import (
     Pair,
     Token,
@@ -18,23 +18,20 @@ from common import (
     i32,
     unpack_pair,
     usize,
+    IdMap,
 )
 from time import Duration, Instant, Profiler
 
-comptime CORPUS = "data/wikitext-103-raw/wiki.train.raw"
+comptime CORPUS_PATH = "data/wikitext-103-raw/wiki.train.raw"
 
 
 def main() raises:
-    with open(CORPUS, "r") as f:
-        var corpus = f.read()
+    var trainer = BPETrainer(
+        min_frequency=1,
+        pretokenizer=Pretokenizer.with_regex(gpt5_pattern()),
+    )
 
-        print(t"Corpus size: {f32(corpus.byte_length()) / 1e6} MB")
-
-        var trainer = BPETrainer(
-            min_frequency=1,
-            pretokenizer=Pretokenizer.with_regex(gpt5_pattern()),
-        )
-        trainer.train(corpus, 50000)
+    trainer.train(CORPUS_PATH, 50000)
 
 
 struct BPETrainer:
@@ -75,17 +72,23 @@ struct BPETrainer:
 
         self.profiler = Profiler()
 
-    def pretokenize(mut self, corpus: String) raises:
+    def pretokenize(mut self, corpus_path: String) raises -> Int:
         """
-        Pretokenizes the corpus according to the specified regex pattern (self.regex), and
-        stores the resulting words and word counts in self.
+        Map and pretokenize a file, storing unique words and counts in self.
+        Return its byte length for throughput reporting. The mapping is released
+        on return; stored words own their token bytes.
         """
         var timer = Instant.now()
 
-        var corpus_bytes = corpus.as_bytes()
+        # mmap the corpus file
+        var mapped_corpus = MappedFile(corpus_path)
+
+        var corpus_bytes = mapped_corpus.as_bytes()
         var ptr = corpus_bytes.unsafe_ptr().as_unsafe_any_origin()
 
-        var hash_to_id = Dict[u64, u32, NilHasher]()
+        # NOTE: We use a custom, insert-only data structure here because it's
+        # much faster than a dict.
+        var hash_to_id = IdMap(4096)
         var words = List[Word]()
         var counts = List[int]()
 
@@ -114,12 +117,13 @@ struct BPETrainer:
             counts.append(1)
             hash_to_id[h] = id
 
-        self.pretokenizer.for_each(corpus, on_word)
+        self.pretokenizer.for_each(corpus_bytes, on_word)
 
         self.words = words^
         self.word_counts = counts^
 
         self.profiler.record("pretokenize", Instant.now().since(timer))
+        return len(corpus_bytes)
 
     def initial_count(mut self) raises:
         var timer = Instant.now()
@@ -184,7 +188,7 @@ struct BPETrainer:
 
         return top_pair
 
-    def train(mut self, corpus: String, vocab_size: int) raises:
+    def train(mut self, corpus_path: String, vocab_size: int) raises:
         var start = Instant.now()
 
         # Build up the initial vocabulary. This is a mapping from token indices
@@ -197,7 +201,7 @@ struct BPETrainer:
             "initialize vocabulary", Instant.now().since(start)
         )
 
-        self.pretokenize(corpus)
+        var corpus_size = self.pretokenize(corpus_path)
 
         self.initial_count()
 
@@ -280,7 +284,7 @@ struct BPETrainer:
         print(t"Vocab size: {len(vocab)}")
         print(
             t"Training throughput:"
-            t" {f64(corpus.byte_length()) / 1e6 / elapsed.as_secs()} MB/s"
+            t" {f64(corpus_size) / 1e6 / elapsed.as_secs()} MB/s"
         )
 
         print(t"Merges checksum: {hex(hash(merges))}")

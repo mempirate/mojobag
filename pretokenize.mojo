@@ -18,14 +18,23 @@ struct Pretokenizer:
     def for_each[
         F: def(MatchSpan) raises
     ](self, corpus: String, callback: F) raises:
-        var corpus_utf8 = corpus.as_bytes()
+        self.for_each(corpus.as_bytes(), callback)
+
+    def for_each[
+        F: def(MatchSpan) raises
+    ](self, corpus_utf8: Span[Byte, _], callback: F) raises:
+        """Pretokenize a complete borrowed byte view without copying it.
+
+        Regex mode expects valid UTF-8; whitespace mode scans raw bytes.
+        Callback offsets are relative to this view.
+        """
 
         # Split with regex
         if self.regex:
             var pattern = self.regex.value()
             var re = Regex(pattern)
 
-            re.for_each_span(corpus, callback)
+            re.for_each_span(corpus_utf8, callback)
 
         # Split on whitespace
         elif self.whitespace:
